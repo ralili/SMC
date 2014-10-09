@@ -1,0 +1,39 @@
+ MODEL NAME
+twoPaths
+
+ MODEL NOTES
+
+
+ MODEL STATES
+ddt(xn,[1,path1+1]) = 0 
+ddt(xn,[2path1,path1+2path1+path2-1]) = rmax(xn-1)(km+xn-1)-kdegxn 
+ddt(xn,path1+path2) = rmax(xn-1)(km+xn-1)-kdegxn+strength1rmax(xpath1-1)(km+xpath1-1)+strength2rmax(xpath1)(km+xpath1) 
+
+xn,[1,path1+1](0) = 1
+xn,[2path1,path1+2path1+path2-1](0) = 0
+xn,path1+path2(0) = 0
+
+ MODEL PARAMETERS
+km = 0.5 
+rmax = 1 
+kdeg = 0.5 
+path1 = 3 
+path2 = 2 
+strength1 = 0 
+strength2 = 0 
+
+
+ MODEL VARIABLES
+
+
+ MODEL REACTIONS
+
+
+ MODEL FUNCTIONS
+
+
+ MODEL EVENTS
+
+
+ MODEL MATLAB FUNCTIONS
+

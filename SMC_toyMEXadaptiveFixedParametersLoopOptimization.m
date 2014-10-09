@@ -1,0 +1,249 @@
+%06.10.2014
+
+%Addition of an adaptive beta_schedule. This means that how much the
+%distribution changes on each step is dependent on how much the effective
+%size would be reduced by that change.
+
+%In this case, we assume that we know the distribution of some of the
+%parameters. In this case, we only simulate these parameters once and then
+%use these values through the whole cycle.
+
+%This function has been modified to optimize both mean and variance of the
+%lognormal prior distribution.
+%The input of this function (priors) must be a 2xn matrix, where the first
+%row is mu/sigma^2 and second row is -1/(2*sigma^2). n corresponds to the
+%number of parameters being estimated.
+function [postTheta,marg_likelihood] = SMC_toyMEXadaptiveFixedParametersLoopOptimization(hyperparameters,Y_data)%evidence, gradient of the evidence, hessian of the evidence
+if nargin < 2
+    Y_data=0;
+end
+
+%% Setup sampler
+%%
+% hyperparameters(2,:)=-exp(hyperparameters(2,:));
+%%
+M = 500;   % number of particles to be propagated
+burn = 15;      % number of burn-in samples  (could vary with the value of beta)
+Theta = cell(1,100);  % particles from all generations
+loglikelihood = zeros(1,M);  % likelihood before resampling
+W = zeros(100,M);
+w = zeros(100,M);
+W(1,:) = 1/M;
+incr_w = zeros(1,M);
+r_times = [];
+sigmanoise = 0.05;
+% sigmalogpar=(-1./2*hyperparameters(2,:)).^0.5;
+% meanlogpar=hyperparameters(1,:).*sigmalogpar.^2;
+meanlogpar=hyperparameters(1,:);
+sigmalogpar=hyperparameters(2,:);
+
+%% Parameter setup
+timeVector=0:0.5:10;%times at which measurements are taken
+
+x0=[1,0,0,0,1,0];%Initial conditions. THIS CHANGES DEPENDING ON THE PROBLEM
+kdeg=0.5;%degradation constant
+rmax=2;%maximal rate of production
+km=0.5;%Michaelis-Menten constant
+
+%%%Here the known model parameters are given prior distributions
+meanlogpar=[meanlogpar,log([kdeg,rmax,km])]
+sigmalogpar=[sigmalogpar,0.,0.,0.]
+variable_parameters=[1,2,3];
+fixed_parameters=[4,5,6];
+%%%%THIS CHANGES DEPENDING ON THE PROBLEM
+path1=4;
+path2=2;
+observableNode=6;
+%%%%
+
+%% Data generation
+if Y_data==0
+    Y=feval('twoPaths3',timeVector,x0,[kdeg,rmax,km,path1,path2,trueStrength1,trueStrength2,trueStrength3]);
+    Y_data=Y.statevalues(:,observableNode)+0.05*randn(length(Y.statevalues(:,observableNode)),1);%this variable contains what we actually can observe experimentally (additive gaussian noise added)
+end
+parnum=length(meanlogpar);%number of parameters
+
+initial_points = zeros(parnum,M);
+parfor k = 1:parnum
+    initial_points(k,:) = lognrnd(meanlogpar(k),sigmalogpar(k),M,1);  % draw initial points distributed according to prior (log-normal)
+end
+
+%% GM setup
+options = statset('MaxIter',500,'TolFun',1e-5);
+
+%% Sampler
+
+parfor m = 1:M
+    P_data=feval('twoPaths3',timeVector,x0,[initial_points(fixed_parameters,m)',path1,path2,initial_points(variable_parameters,m)']);
+    loglikelihood(1,m) = 0.5*sum((Y_data-P_data.statevalues(:,observableNode)).^2)/sigmanoise;                   %likelihood computation
+end
+
+%
+alpha = 0.85;
+bsmax = 100;
+beta_schedule = 0;
+
+a = 0;
+b = 1e-3;
+c = b/2;
+bs = 1;
+while bs<bsmax
+    incr_w = exp((loglikelihood(1,:))*(-c));
+    w(2,:) = incr_w;                              %calculate incremental weights w_1(X_1^i,X_2^i) from {X_1^(i)}
+    W(2,:) = w(2,:)/sum(w(2,:));   %calculate weights {W_{n+1}^i}
+    if 1/(sum(W(2,:).^2))<alpha*1/(sum(W(1,:).^2))
+        b = c;
+        c = (b+a)/2;
+    else
+        a = c;
+        c = (b+a)/2;
+    end
+    bs = bs+1;
+end
+betastep = c;
+beta_schedule = [beta_schedule min(beta_schedule(end)+betastep,1)];
+%
+
+w(2,:) = exp(-beta_schedule(1)*(loglikelihood(1,:)));                               %calculate incremental weights w_1(X_1^i,X_2^i) from {X_1^(i)}. Isn't the likelihood from the prior missing?
+if (M/(1+var(w(2,:)/mean(w(2,:))))<0.5*M)           %If effect sample size is below 0.5, then resample. Resampling decreases weight variance, therefore not letting effect size go too low.
+    resample = 1;
+    r_times = 1;
+    prob = w(2,:)/sum(w(2,:));
+    W(2,:) = 1/M;                                                                      %calculate {W_2^i} (different if resampling occurs)
+else
+    resample = 0;
+    W(2,:) = w(2,:)/sum(w(2,:));
+    prob = 1/M;   %(just to define pr later)
+end
+
+Theta{1} = initial_points;                                                             %first generation {X_1^i} - before resampling
+repl_ind=zeros(M,1);%%%%%%%%%%%%%%%%%%%
+
+dispstat('','init');
+dispstat('Running SMC...','timestamp','keepthis');
+gen_counter=2;
+while beta_schedule(end)<1
+    dispstat(sprintf('Step %d of 30',gen_counter),'timestamp');
+    beta = beta_schedule(end);
+    prev_theta = Theta{gen_counter-1};
+    next_theta = zeros(parnum,M);
+    if (resample)
+        prob(find(prob==0)) = min(prob(find(prob~=0)))/1000;% What does this do?? Is it to pick up samples from the weighted particles?
+        replicates = floor(prob*M);
+        repl_ind = [];
+        theta_res = [];
+        for u = 1:M
+            theta_res = [theta_res Theta{gen_counter-1}(:,u*ones(1,replicates(u)))];
+            repl_ind = [repl_ind u*ones(1,replicates(u))];
+        end
+        rest = sum(replicates);
+        for u = rest+1:M
+            rndpoint = randsample(M,1,true,prob);
+            theta_res = [theta_res Theta{gen_counter-1}(:,rndpoint)];
+            repl_ind = [repl_ind rndpoint];
+        end
+        prev_theta = theta_res;
+    end
+    pr = prob;%What does this do?
+    LL = loglikelihood(gen_counter-1,:);
+    accepts = 0;
+    clusters = 6;
+    [GMMtheta,NlogL,optimInfo] = clusterGM(log(prev_theta(variable_parameters,:))',clusters,'rndsample',1,2,0,1e-6,options);
+    Chol_Sigma = zeros(size(GMMtheta.Sigma));
+    parfor i = 1:clusters
+        Chol_Sigma(:,:,i) = cholcov_A(GMMtheta.Sigma(:,:,i));   %%We do the Choleski decomposition because it is needed to compute random numbers from a multivariate gaussian distribution
+    end
+    parfor m = 1:M%%STUFF IS FAILING BECAUSE THE IF STATEMENT DOES NOT WORK CORRECTLY. WHAT IS HAPPENING?
+        if (resample)
+            start = prev_theta(variable_parameters,m);             %if (resample), choose {X_{n-1}^i} accoding to weights {W_n^i}
+            Eprev = LL(repl_ind(m));             %previous log likelihood(?)
+            Pprev = max(sum(log(lognpdf(start,meanlogpar(variable_parameters)',sigmalogpar(variable_parameters)'))),-1e5); %post loglikelihood(?)
+        else
+            start = prev_theta(variable_parameters,m);             %else choose the previous population {X_{n-1}^i} serially
+            Eprev = LL(m);
+            Pprev = max(sum(log(lognpdf(start,meanlogpar(variable_parameters)',sigmalogpar(variable_parameters)'))),-1e5);
+        end
+        x = zeros(length(variable_parameters),burn);
+        x(:,1) = start;
+        acc = 1;
+        while (acc<=burn)                       %MCMC
+            prop = GMrnd_par(GMMtheta.mu,Chol_Sigma,GMMtheta.PComponents,1)';   %proposed point by the proposal distribution (gaussian mixture)
+            propparams = exp(prop);
+            P_data=feval('twoPaths3',timeVector,x0,[initial_points(fixed_parameters,m)',path1,path2,propparams']);%fixed variables are set to the initial points.
+
+            Eprop = 0.5*sum((Y_data-P_data.statevalues(:,observableNode)).^2)/sigmanoise;
+            Pprop = max(sum(log(lognpdf(propparams,meanlogpar(variable_parameters)',sigmalogpar(variable_parameters)'))),-1e5);%%%%%
+            
+            if rand < min(1,exp(beta*(Eprev-Eprop)-Pprev+Pprop)*GMpdf(GMMtheta,log(x(:,acc))')/GMpdf(GMMtheta,log(propparams)')*prod(propparams)/prod(x(:,acc)))
+                x(:,acc+1) = propparams;
+                Eprev = Eprop;
+                Pprev = Pprop;
+                accepts = accepts + 1;
+            else
+                x(:,acc+1) = x(:,acc);
+            end
+            acc = acc + 1;
+        end
+        next_theta(:,m) = [x(:,end);initial_points(fixed_parameters,m)]';
+        loglikelihood(gen_counter,m) = Eprev;
+        incr_w(m) = exp(Eprev*(beta_schedule(gen_counter-1)-beta_schedule(gen_counter)));     %Why do we need this variable at all? Isn't the likelihood of the prior missing?
+    end
+    
+    %
+    b = min(1e4*betastep,1);
+    a = 0;
+    c = b/2;
+    bs=1;
+    bmax=100;
+    while bs<bsmax
+        incr_w = exp((loglikelihood(gen_counter,:))*(-c));
+        w(gen_counter+1,:) = incr_w;                              %calculate incremental weights w_1(X_1^i,X_2^i) from {X_1^(i)}
+        W(gen_counter+1,:) = W(gen_counter,:).*w(gen_counter+1,:)/sum(W(gen_counter,:).*w(gen_counter+1,:));   %calculatete weights {W_{n+1}^i}
+        if 1/(sum(W(gen_counter+1,:).^2))<alpha*1/(sum(W(gen_counter,:).^2))
+            b = c;
+            c = (b+a)/2;
+        else
+            a = c;
+            c = (b+a)/2;
+        end
+        bs = bs+1;
+    end
+    betastep = c;
+    beta_schedule = [beta_schedule min(beta_schedule(end)+betastep,1)];
+    %
+    total_acc(gen_counter) = accepts;
+    Theta{gen_counter} = next_theta;
+    if (M/(1+var(W(gen_counter+1,:)/mean(W(gen_counter+1,:))))<0.5*M)                  %if they are degenerate, resample
+        resample = 1;
+        r_times = [r_times gen_counter+1];
+        prob = W(gen_counter+1,:);
+        W(gen_counter+1,:) = 1/M;
+    else
+        resample = 0;
+    end
+    minLL = min(loglikelihood(gen_counter,:));
+    gen_counter=gen_counter+1;
+end
+postTheta=Theta{length(beta_schedule)-1};
+total_acc
+
+%%
+%evidence calculation
+blength = length(beta_schedule);
+M = size(Theta{length(beta_schedule)-1},2);
+
+r71 = find(r_times==blength+1);
+if ~isempty(r71)
+    r_times = r_times(1:r71-1);
+end
+R = length(r_times)+1;
+r_times = [1 r_times blength];
+rterms = ones(R,M);
+sterms = ones(1,R);
+for k = 1:R
+    for m = r_times(k)+1:r_times(k+1)
+        rterms(k,:) = rterms(k,:).*w(m,:);
+    end
+    sterms(k) = mean(rterms(k,:));
+end
+marg_likelihood = prod(sterms)

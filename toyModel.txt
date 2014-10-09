@@ -1,0 +1,42 @@
+********** MODEL NAME
+twoPaths2
+
+********** MODEL NOTES
+
+
+********** MODEL STATES
+d/dt(x1) = 0                                                                                 
+d/dt(x2) = 10*rmax*(x1)/(km+x1)-kdeg*x2*10                                                         
+d/dt(x3) = rmax/10*(x2)/(km+x2)-kdeg*x3/10                                                        
+d/dt(x4) = 0                                                                                 
+d/dt(x5) = 0.2*rmax*(x4)/(km+x4)-kdeg*x5+strength1*rmax*(x2)/(km/2+x2)+strength2*rmax*(x3)/(km*2+x3) 
+                                                                                             
+x1(0) = 1                                                                                    
+x2(0) = 0                                                                                    
+x3(0) = 0                                                                                    
+x4(0) = 1                                                                                    
+x5(0) = 0
+
+********** MODEL PARAMETERS
+km = 0.5                                                                                     
+rmax = 1                                                                                     
+kdeg = 0.5                                                                                   
+path1 = 3                                                                                    
+path2 = 2                                                                                    
+strength1 = 0                                                                                
+strength2 = 0
+
+********** MODEL VARIABLES
+
+
+********** MODEL REACTIONS
+
+
+********** MODEL FUNCTIONS
+
+
+********** MODEL EVENTS
+
+
+********** MODEL MATLAB FUNCTIONS
+
